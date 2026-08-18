@@ -1,1 +1,2 @@
 cadquery>=2.8,<3
+trimesh>=4
