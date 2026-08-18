@@ -41,11 +41,15 @@ DEFAULTS = dict(
     lid_thickness=2.0,      # толщина верхней панели крышки, мм
     skirt_depth=6.0,        # на сколько мм юбка крышки перекрывает стенку короба
     fit_clearance=0.2,      # зазор между юбкой крышки и стенкой короба (на сторону), мм
-    snap_enabled=True,      # добавлять ли защёлки (выступ на коробе / углубление в крышке)
-    snap_diameter=3.0,      # диаметр защёлки-купола, мм
-    snap_height=0.5,        # выступ защёлки над стенкой, мм
+    snap_enabled=True,      # добавлять ли защёлки-замки (выступ на коробе / крючок на юбке крышки)
+    snap_diameter=4.0,      # диаметр купола-крючка защёлки, мм
+    snap_height=0.7,        # выступ купола-крючка над стенкой, мм
     snap_per_long_side=1,   # число защёлок на каждой длинной стенке (по X)
     snap_per_short_side=0,  # число защёлок на каждой короткой стенке (по Y)
+    snap_arm_width=14.0,    # ширина гибкого язычка защёлки на юбке крышки, мм
+    snap_arm_gap=1.0,       # ширина прорези, отделяющей язычок от остальной юбки, мм
+    snap_tab_length=4.0,    # на сколько язычок выступает ниже юбки — за него берутся пальцами
+    snap_flare=0.6,         # на сколько нижняя часть язычка выступает наружу (чтобы её было видно/удобно подцепить)
 
     # --- стекирование ---
     stacking_enabled=True,  # добавлять ли на крышке бортик для стекирования
@@ -199,16 +203,36 @@ def _dome_sphere(diameter: float, height: float) -> cq.Workplane:
     return cq.Workplane("XY").sphere(radius), radius
 
 
+def _halfspace_box(face_point, outward_dir, size: float = 200.0) -> cq.Workplane:
+    """Большой прямоугольный параллелепипед, занимающий полупространство
+    "наружу от плоскости грани" в точке `face_point` с нормалью
+    `outward_dir` (единичный вектор, направленный вдоль одной из осей X/Y)."""
+    fx, fy, fz = face_point
+    dx, dy, dz = outward_dir
+    if dx != 0:
+        xmin, xmax = (fx, fx + size) if dx > 0 else (fx - size, fx)
+        ymin, ymax = fy - size / 2, fy + size / 2
+    else:
+        ymin, ymax = (fy, fy + size) if dy > 0 else (fy - size, fy)
+        xmin, xmax = fx - size / 2, fx + size / 2
+    zmin, zmax = fz - size / 2, fz + size / 2
+    return _box_from_bounds(xmin, xmax, ymin, ymax, zmin, zmax)
+
+
 def _place_dome(diameter: float, height: float, face_point, outward_dir):
-    """Купол, чья вершина выступает на `height` от точки `face_point` в
-    направлении `outward_dir` (единичный вектор), а основание лежит на
-    плоскости грани."""
+    """Купол (сферический сегмент), чья вершина выступает на `height` от
+    точки `face_point` в направлении `outward_dir` (единичный вектор), а
+    основание лежит на плоскости грани. Сфера обрезана полупространством
+    "наружу от грани" — иначе при малой высоте купола и большом диаметре
+    сфера может оказаться крупнее стенки и вылезти за её пределы (сквозь
+    верх короба, сквозь стенку в отсек и т.п.)."""
     sphere, radius = _dome_sphere(diameter, height)
     fx, fy, fz = face_point
     dx, dy, dz = outward_dir
     setback = radius - height
     cx, cy, cz = fx - dx * setback, fy - dy * setback, fz - dz * setback
-    return sphere.translate((cx, cy, cz))
+    sphere = sphere.translate((cx, cy, cz))
+    return sphere.intersect(_halfspace_box(face_point, outward_dir))
 
 
 def _snap_positions(box_width, box_length, per_long_side, per_short_side):
@@ -232,6 +256,87 @@ def _snap_positions(box_width, box_length, per_long_side, per_short_side):
         positions.append((-box_width / 2, y, (-1.0, 0.0, 0.0)))
 
     return positions
+
+
+def _box_from_bounds(xmin, xmax, ymin, ymax, zmin, zmax) -> cq.Workplane:
+    """Прямоугольный параллелепипед по явным границам координат."""
+    box = cq.Workplane("XY").box(
+        xmax - xmin, ymax - ymin, zmax - zmin, centered=(False, False, False)
+    )
+    return box.translate((xmin, ymin, zmin))
+
+
+def _wall_span_bounds(x_center, y_center, outward, tangent_span, box_width, box_length,
+                       wall_thickness, fit_clearance, extra_out=0.0):
+    """XY-границы участка стенки юбки шириной tangent_span в районе точки
+    (x_center, y_center) на стенке с направлением наружу `outward`.
+    Внутренняя грань — на границе короба + fit_clearance (как у юбки),
+    внешняя — дальше на wall_thickness (+ extra_out, для "наплыва" язычка)."""
+    dx, dy, _ = outward
+    if dx != 0:
+        face_in = dx * (box_width / 2 + fit_clearance)
+        face_out = face_in + dx * (wall_thickness + extra_out)
+        xmin, xmax = sorted((face_in, face_out))
+        ymin, ymax = y_center - tangent_span / 2, y_center + tangent_span / 2
+    else:
+        face_in = dy * (box_length / 2 + fit_clearance)
+        face_out = face_in + dy * (wall_thickness + extra_out)
+        ymin, ymax = sorted((face_in, face_out))
+        xmin, xmax = x_center - tangent_span / 2, x_center + tangent_span / 2
+    return xmin, xmax, ymin, ymax
+
+
+def add_latch_arms(
+    lid: cq.Workplane,
+    box_width: float,
+    box_length: float,
+    wall_thickness: float,
+    skirt_depth: float,
+    fit_clearance: float,
+    arm_width: float,
+    arm_gap: float,
+    tab_length: float,
+    flare: float,
+    snap_per_long_side: int,
+    snap_per_short_side: int,
+) -> cq.Workplane:
+    """Освобождает в юбке крышки гибкие язычки-защёлки: с обеих сторон
+    каждой защёлки прорезается узкая щель (на всю глубину юбки), так что
+    язычок остаётся закреплён только сверху (на панели крышки) и может
+    пружинить — по нему можно нажать/потянуть, чтобы отстегнуть крышку.
+    Снизу язычок продолжается за пределы юбки на tab_length мм с небольшим
+    наплывом (flare) наружу — за этот выступ удобно взяться пальцами."""
+    inner_w = box_width + 2 * fit_clearance
+    inner_l = box_length + 2 * fit_clearance
+    slot_overshoot = 1.0
+
+    for x, y, outward in _snap_positions(inner_w, inner_l, snap_per_long_side, snap_per_short_side):
+        # Язычок продолжается ниже юбки (z<0) с наплывом наружу — для захвата.
+        txmin, txmax, tymin, tymax = _wall_span_bounds(
+            x, y, outward, arm_width, box_width, box_length, wall_thickness, fit_clearance, extra_out=flare
+        )
+        tab = _box_from_bounds(txmin, txmax, tymin, tymax, -tab_length, 0.0)
+        lid = lid.union(tab)
+
+        # Две прорези по бокам язычка на всю его высоту (юбка + выступ ниже неё).
+        for side in (-1, 1):
+            dx, dy, _ = outward
+            if dx != 0:
+                center = y + side * arm_width / 2
+                sxmin, sxmax, symin, symax = _wall_span_bounds(
+                    x, center, outward, arm_gap, box_width, box_length,
+                    wall_thickness, fit_clearance, extra_out=flare + 0.5,
+                )
+            else:
+                center = x + side * arm_width / 2
+                sxmin, sxmax, symin, symax = _wall_span_bounds(
+                    center, y, outward, arm_gap, box_width, box_length,
+                    wall_thickness, fit_clearance, extra_out=flare + 0.5,
+                )
+            slot = _box_from_bounds(sxmin, sxmax, symin, symax, -tab_length - slot_overshoot, skirt_depth)
+            lid = lid.cut(slot)
+
+    return lid
 
 
 def add_snap_bumps(
@@ -291,6 +396,10 @@ def build_lid(
     snap_height: float = DEFAULTS["snap_height"],
     snap_per_long_side: int = DEFAULTS["snap_per_long_side"],
     snap_per_short_side: int = DEFAULTS["snap_per_short_side"],
+    snap_arm_width: float = DEFAULTS["snap_arm_width"],
+    snap_arm_gap: float = DEFAULTS["snap_arm_gap"],
+    snap_tab_length: float = DEFAULTS["snap_tab_length"],
+    snap_flare: float = DEFAULTS["snap_flare"],
     stacking_enabled: bool = DEFAULTS["stacking_enabled"],
     stack_clearance: float = DEFAULTS["stack_clearance"],
     lip_height: float = DEFAULTS["lip_height"],
@@ -302,8 +411,15 @@ def build_lid(
 
     Крышка = плоская панель + юбка (стенка), надевающаяся снаружи на
     стенки короба на skirt_depth мм, с зазором fit_clearance на сторону.
-    При snap_enabled=True на юбке вырезаны углубления под защёлки короба
-    (см. add_snap_bumps/add_snap_pockets).
+
+    При snap_enabled=True на юбке вырезаются защёлки-замки: узкими
+    прорезями (add_latch_arms) от остальной юбки отделяется гибкий
+    язычок шириной snap_arm_width, продолжающийся ниже юбки на
+    snap_tab_length мм (с наплывом snap_flare — чтобы его было видно и
+    удобно подцепить пальцами). На язычке — крючок-купол (add_snap_pockets),
+    цепляющийся за ответный выступ на стенке короба (add_snap_bumps).
+    Так как язычок отделён от жёсткой юбки, его можно отогнуть и
+    отстегнуть крышку, не ломая защёлку.
 
     При stacking_enabled=True на верхней стороне крышки формируется
     приподнятый бортик высотой lip_height, внутренний размер которого
@@ -318,6 +434,8 @@ def build_lid(
         raise ValueError("skirt_depth должен быть положительным и меньше высоты короба")
     if lid_thickness <= 0:
         raise ValueError("lid_thickness должен быть положительным")
+    if snap_enabled and skirt_depth + snap_tab_length >= box_height:
+        raise ValueError("skirt_depth + snap_tab_length должны быть меньше высоты короба")
 
     skirt_inner_w = box_width + 2 * fit_clearance
     skirt_inner_l = box_length + 2 * fit_clearance
@@ -363,6 +481,11 @@ def build_lid(
         lid = lid.union(lip)
 
     if snap_enabled:
+        lid = add_latch_arms(
+            lid, box_width, box_length, wall_thickness, skirt_depth, fit_clearance,
+            snap_arm_width, snap_arm_gap, snap_tab_length, snap_flare,
+            snap_per_long_side, snap_per_short_side,
+        )
         lid = add_snap_pockets(
             lid, box_width, box_length, skirt_depth, fit_clearance,
             snap_diameter, snap_height, snap_per_long_side, snap_per_short_side,
@@ -385,6 +508,7 @@ def build_box_and_lid(**kwargs):
         "lid_thickness", "skirt_depth", "fit_clearance",
         "snap_enabled", "snap_diameter", "snap_height",
         "snap_per_long_side", "snap_per_short_side",
+        "snap_arm_width", "snap_arm_gap", "snap_tab_length", "snap_flare",
         "stacking_enabled", "stack_clearance", "lip_height", "lip_wall_thickness",
     }
     box_args = {k: v for k, v in kwargs.items() if k in box_keys}
@@ -478,11 +602,15 @@ def main(argv=None):
     parser.add_argument("--lid-thickness", type=float, default=DEFAULTS["lid_thickness"], help="толщина верхней панели крышки, мм")
     parser.add_argument("--skirt-depth", type=float, default=DEFAULTS["skirt_depth"], help="глубина перекрытия юбкой крышки стенки короба, мм")
     parser.add_argument("--fit-clearance", type=float, default=DEFAULTS["fit_clearance"], help="зазор между юбкой крышки и стенкой короба, мм (на сторону)")
-    parser.add_argument("--no-snap", action="store_true", help="не добавлять защёлки")
-    parser.add_argument("--snap-diameter", type=float, default=DEFAULTS["snap_diameter"], help="диаметр купола защёлки, мм")
-    parser.add_argument("--snap-height", type=float, default=DEFAULTS["snap_height"], help="высота выступа купола защёлки, мм")
+    parser.add_argument("--no-snap", action="store_true", help="не добавлять защёлки-замки (только посадка с натягом)")
+    parser.add_argument("--snap-diameter", type=float, default=DEFAULTS["snap_diameter"], help="диаметр купола-крючка защёлки, мм")
+    parser.add_argument("--snap-height", type=float, default=DEFAULTS["snap_height"], help="выступ купола-крючка защёлки, мм")
     parser.add_argument("--snap-long", type=int, default=DEFAULTS["snap_per_long_side"], help="число защёлок на каждой длинной стенке")
     parser.add_argument("--snap-short", type=int, default=DEFAULTS["snap_per_short_side"], help="число защёлок на каждой короткой стенке")
+    parser.add_argument("--snap-arm-width", type=float, default=DEFAULTS["snap_arm_width"], help="ширина гибкого язычка защёлки, мм")
+    parser.add_argument("--snap-arm-gap", type=float, default=DEFAULTS["snap_arm_gap"], help="ширина прорези, отделяющей язычок защёлки от юбки, мм")
+    parser.add_argument("--snap-tab-length", type=float, default=DEFAULTS["snap_tab_length"], help="на сколько язычок защёлки выступает ниже юбки (для захвата пальцами), мм")
+    parser.add_argument("--snap-flare", type=float, default=DEFAULTS["snap_flare"], help="наплыв наружу нижней части язычка защёлки (чтобы было видно/удобно подцепить), мм")
 
     parser.add_argument("--no-stacking", action="store_true", help="не добавлять бортик для стекирования на крышке")
     parser.add_argument("--stack-clearance", type=float, default=DEFAULTS["stack_clearance"], help="зазор между бортиком и дном следующего короба, мм (на сторону)")
@@ -509,6 +637,10 @@ def main(argv=None):
         snap_height=args.snap_height,
         snap_per_long_side=args.snap_long,
         snap_per_short_side=args.snap_short,
+        snap_arm_width=args.snap_arm_width,
+        snap_arm_gap=args.snap_arm_gap,
+        snap_tab_length=args.snap_tab_length,
+        snap_flare=args.snap_flare,
         stacking_enabled=not args.no_stacking,
         stack_clearance=args.stack_clearance,
         lip_height=args.lip_height,
