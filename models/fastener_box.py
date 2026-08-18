@@ -56,6 +56,17 @@ DEFAULTS = dict(
     stack_clearance=0.25,   # зазор между бортиком и дном следующего короба (на сторону), мм
     lip_height=2.5,          # высота бортика для стекирования, мм
     lip_wall_thickness=1.5,  # толщина стенки бортика, мм
+
+    # --- шарнир ---
+    hinge_enabled=True,          # крышка на петлях с одной стороны + защёлка с противоположной
+    hinge_wall="south",          # какая стенка короба — шарнир: north/south/east/west
+    hinge_pin_diameter=3.0,      # диаметр стержня-шпильки (отдельная деталь), мм
+    hinge_pin_clearance=0.3,     # зазор между шпилькой и отверстием петли (на диаметр), мм
+    hinge_knuckle_diameter=7.0,  # внешний диаметр каждой петли-цилиндра, мм
+    hinge_knuckle_count=5,       # общее число чередующихся петель короб/крышка (нечётное — по петле короба по краям)
+    hinge_knuckle_gap=0.5,       # зазор между соседними петлями вдоль оси шарнира, мм
+    hinge_margin=10.0,           # отступ ряда петель от боковых стенок короба, мм
+    hinge_embed=1.2,             # насколько петля "утоплена" в стенку/крышку для прочного соединения, мм
 )
 
 # Минимальный зазор, на который "пробойник" отсека выступает выше/ниже
@@ -235,10 +246,22 @@ def _place_dome(diameter: float, height: float, face_point, outward_dir):
     return sphere.intersect(_halfspace_box(face_point, outward_dir))
 
 
-def _snap_positions(box_width, box_length, per_long_side, per_short_side):
+#: Направление "наружу" для каждой из 4 стенок короба (north/south — длинные
+#: стенки, тянутся вдоль X; east/west — короткие, тянутся вдоль Y).
+WALL_OUTWARD = {
+    "north": (0.0, 1.0, 0.0),
+    "south": (0.0, -1.0, 0.0),
+    "east": (1.0, 0.0, 0.0),
+    "west": (-1.0, 0.0, 0.0),
+}
+
+
+def _snap_positions(box_width, box_length, per_long_side, per_short_side, exclude_wall=None):
     """Точки (x, y, outward_dir) на внешних стенках короба для защёлок.
     Длинные стенки — по Y = ±box_length/2 (тянутся вдоль X, длина = box_width);
-    короткие стенки — по X = ±box_width/2 (тянутся вдоль Y, длина = box_length)."""
+    короткие стенки — по X = ±box_width/2 (тянутся вдоль Y, длина = box_length).
+    exclude_wall — имя стены ('north'/'south'/'east'/'west'), на которой
+    защёлки не нужны (например, там, где стена занята петлями шарнира)."""
     positions = []
 
     def spread(n, span):
@@ -247,13 +270,18 @@ def _snap_positions(box_width, box_length, per_long_side, per_short_side):
         step = span / (n + 1)
         return [-span / 2 + step * (i + 1) for i in range(n)]
 
-    for x in spread(per_long_side, box_width):
-        positions.append((x, box_length / 2, (0.0, 1.0, 0.0)))
-        positions.append((x, -box_length / 2, (0.0, -1.0, 0.0)))
-
-    for y in spread(per_short_side, box_length):
-        positions.append((box_width / 2, y, (1.0, 0.0, 0.0)))
-        positions.append((-box_width / 2, y, (-1.0, 0.0, 0.0)))
+    if exclude_wall != "north":
+        for x in spread(per_long_side, box_width):
+            positions.append((x, box_length / 2, WALL_OUTWARD["north"]))
+    if exclude_wall != "south":
+        for x in spread(per_long_side, box_width):
+            positions.append((x, -box_length / 2, WALL_OUTWARD["south"]))
+    if exclude_wall != "east":
+        for y in spread(per_short_side, box_length):
+            positions.append((box_width / 2, y, WALL_OUTWARD["east"]))
+    if exclude_wall != "west":
+        for y in spread(per_short_side, box_length):
+            positions.append((-box_width / 2, y, WALL_OUTWARD["west"]))
 
     return positions
 
@@ -299,6 +327,7 @@ def add_latch_arms(
     flare: float,
     snap_per_long_side: int,
     snap_per_short_side: int,
+    exclude_wall=None,
 ) -> cq.Workplane:
     """Освобождает в юбке крышки гибкие язычки-защёлки: с обеих сторон
     каждой защёлки прорезается узкая щель (на всю глубину юбки), так что
@@ -310,7 +339,7 @@ def add_latch_arms(
     inner_l = box_length + 2 * fit_clearance
     slot_overshoot = 1.0
 
-    for x, y, outward in _snap_positions(inner_w, inner_l, snap_per_long_side, snap_per_short_side):
+    for x, y, outward in _snap_positions(inner_w, inner_l, snap_per_long_side, snap_per_short_side, exclude_wall):
         # Язычок продолжается ниже юбки (z<0) с наплывом наружу — для захвата.
         txmin, txmax, tymin, tymax = _wall_span_bounds(
             x, y, outward, arm_width, box_width, box_length, wall_thickness, fit_clearance, extra_out=flare
@@ -349,11 +378,12 @@ def add_snap_bumps(
     snap_height: float,
     snap_per_long_side: int,
     snap_per_short_side: int,
+    exclude_wall=None,
 ) -> cq.Workplane:
     """Добавляет на внешние стенки короба выступы-защёлки на середине
     высоты будущего перекрытия юбкой крышки (верхние skirt_depth мм)."""
     z = box_height - skirt_depth / 2
-    for x, y, outward in _snap_positions(box_width, box_length, snap_per_long_side, snap_per_short_side):
+    for x, y, outward in _snap_positions(box_width, box_length, snap_per_long_side, snap_per_short_side, exclude_wall):
         dome = _place_dome(snap_diameter, snap_height, (x, y, z), outward)
         body = body.union(dome)
     return body
@@ -369,6 +399,7 @@ def add_snap_pockets(
     snap_height: float,
     snap_per_long_side: int,
     snap_per_short_side: int,
+    exclude_wall=None,
 ) -> cq.Workplane:
     """Вырезает на внутренней стороне юбки крышки углубления, отвечающие
     выступам-защёлкам на коробе (со небольшим запасом для лёгкой сборки)."""
@@ -377,10 +408,155 @@ def add_snap_pockets(
     pocket_diameter = snap_diameter + 0.4
     pocket_height = snap_height + 0.15
     z_local = skirt_depth / 2
-    for x, y, outward in _snap_positions(inner_w, inner_l, snap_per_long_side, snap_per_short_side):
+    for x, y, outward in _snap_positions(inner_w, inner_l, snap_per_long_side, snap_per_short_side, exclude_wall):
         pocket = _place_dome(pocket_diameter, pocket_height, (x, y, z_local), outward)
         lid = lid.cut(pocket)
     return lid
+
+
+# ---------------------------------------------------------------------------
+# Шарнир: короб и крышка соединены на одной стенке рядом чередующихся
+# петель-цилиндров (короб/крышка/короб/...), через которые после печати
+# продевается отдельная деталь — стержень-шпилька.
+# ---------------------------------------------------------------------------
+
+def _tangent_cylinder(axis: str, radius: float, t_min: float, t_max: float,
+                       normal_coord: float, z_coord: float) -> cq.Workplane:
+    """Цилиндр радиуса `radius`, ось которого идёт вдоль X (axis='x') или
+    вдоль Y (axis='y') от t_min до t_max; `normal_coord` — координата оси
+    по перпендикулярному горизонтальному направлению, `z_coord` — высота Z."""
+    cyl = cq.Workplane("XY").circle(radius).extrude(t_max - t_min)
+    if axis == "x":
+        cyl = cyl.rotate((0, 0, 0), (0, 1, 0), 90)
+        return cyl.translate((t_min, normal_coord, z_coord))
+    cyl = cyl.rotate((0, 0, 0), (1, 0, 0), -90)
+    return cyl.translate((normal_coord, t_min, z_coord))
+
+
+def _hinge_knuckle_segments(hinge_span: float, count: int, gap: float):
+    """Список (t_min, t_max, owner) для `count` чередующихся петель вдоль
+    оси шарнира длиной hinge_span, с зазором gap между соседними. owner —
+    'box' для чётных индексов (петли короба, по краям ряда), 'lid' —
+    для нечётных (петли крышки)."""
+    if count < 1:
+        raise ValueError("hinge_knuckle_count должен быть не меньше 1")
+    usable = hinge_span - gap * (count - 1)
+    if usable <= 0:
+        raise ValueError("hinge_knuckle_gap слишком велик для hinge_knuckle_count петель на этой стенке")
+    width = usable / count
+    t0 = -hinge_span / 2
+    segments = []
+    for i in range(count):
+        tmin = t0 + i * (width + gap)
+        tmax = tmin + width
+        owner = "box" if i % 2 == 0 else "lid"
+        segments.append((tmin, tmax, owner))
+    return segments
+
+
+def _hinge_geometry(box_width, box_length, box_height, hinge_wall, hinge_knuckle_diameter, hinge_embed):
+    """Общие для короба и крышки величины оси шарнира: направление
+    "наружу", ось вдоль которой тянутся петли (x/y), координата этой оси
+    по нормали к стенке (одна и та же у короба и крышки — чтобы петли
+    были соосны), высота Z (в глобальных координатах короба) и полная
+    длина стенки-шарнира (для расчёта отступов/протяжённости ряда петель)."""
+    if hinge_wall not in WALL_OUTWARD:
+        raise ValueError(f"hinge_wall должен быть одним из {list(WALL_OUTWARD)}")
+    dx, dy, _ = WALL_OUTWARD[hinge_wall]
+    axis = "x" if dy != 0 else "y"
+    wall_span = box_width if axis == "x" else box_length
+    sign = dy if dy != 0 else dx
+    wall_outer = sign * ((box_length if axis == "x" else box_width) / 2)
+    knuckle_radius = hinge_knuckle_diameter / 2
+    pivot_normal = wall_outer + sign * (knuckle_radius - hinge_embed)
+    pivot_z = box_height
+    return axis, wall_span, pivot_normal, pivot_z
+
+
+def add_hinge(
+    base: cq.Workplane,
+    lid: cq.Workplane,
+    box_width: float = DEFAULTS["box_width"],
+    box_length: float = DEFAULTS["box_length"],
+    box_height: float = DEFAULTS["box_height"],
+    skirt_depth: float = DEFAULTS["skirt_depth"],
+    hinge_wall: str = DEFAULTS["hinge_wall"],
+    hinge_pin_diameter: float = DEFAULTS["hinge_pin_diameter"],
+    hinge_pin_clearance: float = DEFAULTS["hinge_pin_clearance"],
+    hinge_knuckle_diameter: float = DEFAULTS["hinge_knuckle_diameter"],
+    hinge_knuckle_count: int = DEFAULTS["hinge_knuckle_count"],
+    hinge_knuckle_gap: float = DEFAULTS["hinge_knuckle_gap"],
+    hinge_margin: float = DEFAULTS["hinge_margin"],
+    hinge_embed: float = DEFAULTS["hinge_embed"],
+):
+    """Добавляет к коробу и крышке чередующиеся петли шарнира на стенке
+    hinge_wall и возвращает (base, lid, pin) — короб, крышку и отдельную
+    деталь-шпильку для сборки (продевается в отверстия петель после
+    печати). Петли короба и крышки соосны при "закрытом" положении
+    крышки (as build_lid размещает её при skirt_depth-посадке)."""
+    axis, wall_span, pivot_normal, pivot_z = _hinge_geometry(
+        box_width, box_length, box_height, hinge_wall, hinge_knuckle_diameter, hinge_embed
+    )
+    hinge_span = wall_span - 2 * hinge_margin
+    if hinge_span <= 0:
+        raise ValueError("hinge_margin слишком велик для длины стенки-шарнира")
+
+    segments = _hinge_knuckle_segments(hinge_span, hinge_knuckle_count, hinge_knuckle_gap)
+    knuckle_radius = hinge_knuckle_diameter / 2
+    bore_radius = hinge_pin_diameter / 2 + hinge_pin_clearance / 2
+    clearance_radius = knuckle_radius + 0.3
+    bore_overshoot = 0.5
+
+    for tmin, tmax, owner in segments:
+        z = pivot_z if owner == "box" else skirt_depth
+        knuckle = _tangent_cylinder(axis, knuckle_radius, tmin, tmax, pivot_normal, z)
+        bore = _tangent_cylinder(axis, bore_radius, tmin - bore_overshoot, tmax + bore_overshoot, pivot_normal, z)
+        knuckle = knuckle.cut(bore)
+        # На "закрытой" крышке (build_lid/CLI сажают её ровно поверх короба
+        # без поворота) петли короба и крышки соосны и лежат в одном
+        # Z-диапазоне — значит, в сегментах чужого владельца нужно вырезать
+        # у СВОЕЙ детали зазор под петлю другой, иначе петля короба упрётся
+        # в панель крышки, а петля крышки — в стенку короба.
+        clearance = _tangent_cylinder(
+            axis, clearance_radius, tmin - bore_overshoot, tmax + bore_overshoot, pivot_normal,
+            skirt_depth if owner == "box" else pivot_z,
+        )
+        if owner == "box":
+            base = base.union(knuckle)
+            lid = lid.cut(clearance)
+        else:
+            lid = lid.union(knuckle)
+            base = base.cut(clearance)
+
+    pin_length = hinge_span - hinge_knuckle_gap
+    pin_radius = hinge_pin_diameter / 2
+    pin = _tangent_cylinder(axis, pin_radius, -pin_length / 2, pin_length / 2, pivot_normal, pivot_z)
+
+    return base, lid, pin
+
+
+def _remove_wall_skirt(lid: cq.Workplane, box_width, box_length, wall_thickness, fit_clearance,
+                        skirt_depth, wall: str) -> cq.Workplane:
+    """Вырезает из юбки крышки участок стенки `wall` целиком (там, где
+    вместо скользящей посадки будет ряд петель шарнира)."""
+    overshoot = 2.0
+    skirt_inner_w = box_width + 2 * fit_clearance
+    skirt_inner_l = box_length + 2 * fit_clearance
+    skirt_outer_w = skirt_inner_w + 2 * wall_thickness
+    skirt_outer_l = skirt_inner_l + 2 * wall_thickness
+    dx, dy, _ = WALL_OUTWARD[wall]
+    if dx != 0:
+        face_in = dx * (skirt_inner_w / 2)
+        face_out = dx * (skirt_outer_w / 2 + overshoot)
+        xmin, xmax = sorted((face_in, face_out))
+        ymin, ymax = -skirt_outer_l / 2 - overshoot, skirt_outer_l / 2 + overshoot
+    else:
+        face_in = dy * (skirt_inner_l / 2)
+        face_out = dy * (skirt_outer_l / 2 + overshoot)
+        ymin, ymax = sorted((face_in, face_out))
+        xmin, xmax = -skirt_outer_w / 2 - overshoot, skirt_outer_w / 2 + overshoot
+    notch = _box_from_bounds(xmin, xmax, ymin, ymax, -overshoot, skirt_depth + overshoot)
+    return lid.cut(notch)
 
 
 def build_lid(
@@ -404,6 +580,8 @@ def build_lid(
     stack_clearance: float = DEFAULTS["stack_clearance"],
     lip_height: float = DEFAULTS["lip_height"],
     lip_wall_thickness: float = DEFAULTS["lip_wall_thickness"],
+    hinge_enabled: bool = DEFAULTS["hinge_enabled"],
+    hinge_wall: str = DEFAULTS["hinge_wall"],
 ) -> cq.Workplane:
     """Строит крышку для короба с параметрами box_width/box_length/
     box_height/wall_thickness (они должны совпадать с параметрами короба,
@@ -412,14 +590,22 @@ def build_lid(
     Крышка = плоская панель + юбка (стенка), надевающаяся снаружи на
     стенки короба на skirt_depth мм, с зазором fit_clearance на сторону.
 
-    При snap_enabled=True на юбке вырезаются защёлки-замки: узкими
-    прорезями (add_latch_arms) от остальной юбки отделяется гибкий
-    язычок шириной snap_arm_width, продолжающийся ниже юбки на
-    snap_tab_length мм (с наплывом snap_flare — чтобы его было видно и
-    удобно подцепить пальцами). На язычке — крючок-купол (add_snap_pockets),
-    цепляющийся за ответный выступ на стенке короба (add_snap_bumps).
-    Так как язычок отделён от жёсткой юбки, его можно отогнуть и
-    отстегнуть крышку, не ломая защёлку.
+    При hinge_enabled=True юбка на стенке hinge_wall вырезается целиком —
+    там вместо скользящей посадки формируется ряд петель шарнира (см.
+    add_hinge, вызывается отдельно после build_fastener_box/build_lid,
+    т.к. затрагивает обе детали). Защёлки (если включены) автоматически
+    исключаются с этой стенки — по умолчанию (`snap_per_long_side=1`,
+    hinge_wall="south") получается ровно одна защёлка на противоположной
+    длинной стенке, как у обычного чемодана.
+
+    При snap_enabled=True на юбке (кроме стенки шарнира) вырезаются
+    защёлки-замки: узкими прорезями (add_latch_arms) от остальной юбки
+    отделяется гибкий язычок шириной snap_arm_width, продолжающийся ниже
+    юбки на snap_tab_length мм (с наплывом snap_flare — чтобы его было
+    видно и удобно подцепить пальцами). На язычке — крючок-купол
+    (add_snap_pockets), цепляющийся за ответный выступ на стенке короба
+    (add_snap_bumps). Так как язычок отделён от жёсткой юбки, его можно
+    отогнуть и отстегнуть крышку, не ломая защёлку.
 
     При stacking_enabled=True на верхней стороне крышки формируется
     приподнятый бортик высотой lip_height, внутренний размер которого
@@ -436,6 +622,8 @@ def build_lid(
         raise ValueError("lid_thickness должен быть положительным")
     if snap_enabled and skirt_depth + snap_tab_length >= box_height:
         raise ValueError("skirt_depth + snap_tab_length должны быть меньше высоты короба")
+    if hinge_enabled and hinge_wall not in WALL_OUTWARD:
+        raise ValueError(f"hinge_wall должен быть одним из {list(WALL_OUTWARD)}")
 
     skirt_inner_w = box_width + 2 * fit_clearance
     skirt_inner_l = box_length + 2 * fit_clearance
@@ -480,25 +668,32 @@ def build_lid(
         )
         lid = lid.union(lip)
 
+    hinge_exclude = hinge_wall if hinge_enabled else None
+    if hinge_enabled:
+        lid = _remove_wall_skirt(lid, box_width, box_length, wall_thickness, fit_clearance, skirt_depth, hinge_wall)
+
     if snap_enabled:
         lid = add_latch_arms(
             lid, box_width, box_length, wall_thickness, skirt_depth, fit_clearance,
             snap_arm_width, snap_arm_gap, snap_tab_length, snap_flare,
-            snap_per_long_side, snap_per_short_side,
+            snap_per_long_side, snap_per_short_side, exclude_wall=hinge_exclude,
         )
         lid = add_snap_pockets(
             lid, box_width, box_length, skirt_depth, fit_clearance,
             snap_diameter, snap_height, snap_per_long_side, snap_per_short_side,
+            exclude_wall=hinge_exclude,
         )
 
     return lid
 
 
 def build_box_and_lid(**kwargs):
-    """Удобная обёртка: строит короб и подходящую к нему крышку из общего
-    набора параметров. Принимает объединение параметров build_fastener_box
-    и build_lid (пересекающиеся имена — box_width/box_length/box_height/
-    wall_thickness — используются в обеих частях)."""
+    """Удобная обёртка: строит короб, подходящую к нему крышку и (если
+    hinge_enabled) деталь-шпильку шарнира из общего набора параметров.
+    Принимает объединение параметров build_fastener_box, build_lid и
+    add_hinge (пересекающиеся имена — box_width/box_length/box_height/
+    wall_thickness — используются в нескольких частях). Возвращает
+    (base, lid, pin) — pin равен None, если шарнир отключён."""
     box_keys = {
         "box_width", "box_length", "box_height", "wall_thickness",
         "num_rows", "row_cols", "corner_radius", "row_sizes", "row_col_sizes",
@@ -510,9 +705,20 @@ def build_box_and_lid(**kwargs):
         "snap_per_long_side", "snap_per_short_side",
         "snap_arm_width", "snap_arm_gap", "snap_tab_length", "snap_flare",
         "stacking_enabled", "stack_clearance", "lip_height", "lip_wall_thickness",
+        "hinge_enabled", "hinge_wall",
+    }
+    hinge_keys = {
+        "box_width", "box_length", "box_height", "skirt_depth", "hinge_wall",
+        "hinge_pin_diameter", "hinge_pin_clearance", "hinge_knuckle_diameter",
+        "hinge_knuckle_count", "hinge_knuckle_gap", "hinge_margin", "hinge_embed",
     }
     box_args = {k: v for k, v in kwargs.items() if k in box_keys}
     lid_args = {k: v for k, v in kwargs.items() if k in lid_keys}
+    hinge_args = {k: v for k, v in kwargs.items() if k in hinge_keys}
+
+    hinge_enabled = kwargs.get("hinge_enabled", DEFAULTS["hinge_enabled"])
+    hinge_wall = kwargs.get("hinge_wall", DEFAULTS["hinge_wall"])
+    snap_exclude = hinge_wall if hinge_enabled else None
 
     base = build_fastener_box(**box_args)
     if kwargs.get("snap_enabled", DEFAULTS["snap_enabled"]):
@@ -526,9 +732,15 @@ def build_box_and_lid(**kwargs):
             snap_height=kwargs.get("snap_height", DEFAULTS["snap_height"]),
             snap_per_long_side=kwargs.get("snap_per_long_side", DEFAULTS["snap_per_long_side"]),
             snap_per_short_side=kwargs.get("snap_per_short_side", DEFAULTS["snap_per_short_side"]),
+            exclude_wall=snap_exclude,
         )
     lid = build_lid(**lid_args)
-    return base, lid
+
+    pin = None
+    if hinge_enabled:
+        base, lid, pin = add_hinge(base, lid, **hinge_args)
+
+    return base, lid, pin
 
 
 def _parse_float_list(text):
@@ -617,8 +829,19 @@ def main(argv=None):
     parser.add_argument("--lip-height", type=float, default=DEFAULTS["lip_height"], help="высота бортика для стекирования, мм")
     parser.add_argument("--lip-wall", type=float, default=DEFAULTS["lip_wall_thickness"], help="толщина стенки бортика для стекирования, мм")
 
+    parser.add_argument("--no-hinge", action="store_true", help="не добавлять шарнир (крышка полностью съёмная на защёлках со всех сторон)")
+    parser.add_argument("--hinge-wall", type=str, default=DEFAULTS["hinge_wall"], choices=["north", "south", "east", "west"], help="какая стенка короба — шарнир")
+    parser.add_argument("--hinge-pin-diameter", type=float, default=DEFAULTS["hinge_pin_diameter"], help="диаметр стержня-шпильки шарнира, мм")
+    parser.add_argument("--hinge-pin-clearance", type=float, default=DEFAULTS["hinge_pin_clearance"], help="зазор между шпилькой и отверстием петли, мм")
+    parser.add_argument("--hinge-knuckle-diameter", type=float, default=DEFAULTS["hinge_knuckle_diameter"], help="внешний диаметр петель шарнира, мм")
+    parser.add_argument("--hinge-knuckle-count", type=int, default=DEFAULTS["hinge_knuckle_count"], help="общее число чередующихся петель короб/крышка")
+    parser.add_argument("--hinge-knuckle-gap", type=float, default=DEFAULTS["hinge_knuckle_gap"], help="зазор между соседними петлями шарнира, мм")
+    parser.add_argument("--hinge-margin", type=float, default=DEFAULTS["hinge_margin"], help="отступ ряда петель шарнира от боковых стенок короба, мм")
+    parser.add_argument("--hinge-embed", type=float, default=DEFAULTS["hinge_embed"], help="насколько петля утоплена в стенку/крышку, мм")
+
     parser.add_argument("--out", type=str, default="stl/fastener_box.stl", help="путь к выходному STL файлу короба")
     parser.add_argument("--lid-out", type=str, default=None, help="путь к выходному STL файлу крышки (по умолчанию — из --out с суффиксом _lid)")
+    parser.add_argument("--pin-out", type=str, default=None, help="путь к выходному STL файлу шпильки шарнира (по умолчанию — из --out с суффиксом _pin)")
     parser.add_argument("--step", type=str, default=None, help="дополнительно сохранить STEP короба по указанному пути")
     args = parser.parse_args(argv)
 
@@ -645,7 +868,11 @@ def main(argv=None):
         stack_clearance=args.stack_clearance,
         lip_height=args.lip_height,
         lip_wall_thickness=args.lip_wall,
+        hinge_enabled=(not args.no_hinge) and (not args.no_lid),
+        hinge_wall=args.hinge_wall,
     )
+
+    snap_exclude = common["hinge_wall"] if common["hinge_enabled"] else None
 
     base = build_fastener_box(
         num_rows=args.rows,
@@ -661,11 +888,8 @@ def main(argv=None):
             box_width=args.width, box_length=args.length, box_height=args.height,
             skirt_depth=args.skirt_depth, snap_diameter=args.snap_diameter,
             snap_height=args.snap_height, snap_per_long_side=args.snap_long,
-            snap_per_short_side=args.snap_short,
+            snap_per_short_side=args.snap_short, exclude_wall=snap_exclude,
         )
-
-    ok = _export_stl(base, args.out)
-    print(f"STL короба сохранён: {args.out}" + ("" if ok else " (ВНИМАНИЕ: STL не watertight)"))
 
     if args.step:
         cq.exporters.export(base, args.step)
@@ -673,9 +897,31 @@ def main(argv=None):
 
     if not args.no_lid:
         lid = build_lid(**common)
+        if common["hinge_enabled"]:
+            base, lid, pin = add_hinge(
+                base, lid,
+                box_width=args.width, box_length=args.length, box_height=args.height,
+                skirt_depth=args.skirt_depth, hinge_wall=args.hinge_wall,
+                hinge_pin_diameter=args.hinge_pin_diameter,
+                hinge_pin_clearance=args.hinge_pin_clearance,
+                hinge_knuckle_diameter=args.hinge_knuckle_diameter,
+                hinge_knuckle_count=args.hinge_knuckle_count,
+                hinge_knuckle_gap=args.hinge_knuckle_gap,
+                hinge_margin=args.hinge_margin, hinge_embed=args.hinge_embed,
+            )
+            pin_out = args.pin_out or _derive_lid_path(args.out).replace("_lid.", "_pin.")
+            ok = _export_stl(pin, pin_out)
+            print(f"STL шпильки шарнира сохранён: {pin_out}" + ("" if ok else " (ВНИМАНИЕ: STL не watertight)"))
+
+        ok = _export_stl(base, args.out)
+        print(f"STL короба сохранён: {args.out}" + ("" if ok else " (ВНИМАНИЕ: STL не watertight)"))
+
         lid_out = args.lid_out or _derive_lid_path(args.out)
         ok = _export_stl(lid, lid_out)
         print(f"STL крышки сохранён: {lid_out}" + ("" if ok else " (ВНИМАНИЕ: STL не watertight)"))
+    else:
+        ok = _export_stl(base, args.out)
+        print(f"STL короба сохранён: {args.out}" + ("" if ok else " (ВНИМАНИЕ: STL не watertight)"))
 
 
 if __name__ == "__main__":
