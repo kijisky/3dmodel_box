@@ -16,7 +16,7 @@ import trimesh
 
 DEFAULTS = dict(
     aa_diameter=14.5, aaa_diameter=10.5, clearance=0.5,
-    wall=1.2, floor=1.2,
+    wall=0.8, floor=1.0,
     height=26.0, aaa_height=24.0, coin_height=18.0,
     aa_cols=8, aa_rows=5, aaa_cols=4, aaa_rows=7,
     coin_diameters=(20.0,) * 6 + (24.5,) * 2,
