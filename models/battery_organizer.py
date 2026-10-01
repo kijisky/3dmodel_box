@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Органайзер для батареек AA и AAA — только нижняя часть (без крышки).
-Батарейки стоят вертикально в круглых гнёздах, уложенных «сотами»
-(гексагональная упаковка). Левая зона — AA, правая — AAA. Гнёзда глубиной
+Батарейки стоят вертикально в шестигранных гнёздах-сотах
+(общие прямые стенки — печатается заметно быстрее круглых). Левая зона — AA, правая — AAA. Гнёзда глубиной
 в половину батарейки — удобно брать пальцами. Стенки тонкие (по умолчанию
 1 мм, соседние гнёзда делят общую стенку), печатается без поддержек.
 
@@ -33,14 +33,22 @@ DEFAULTS = dict(
 _HEX = math.sqrt(3) / 2
 
 
+def _hex(x, y, af):
+    """Шестиугольник (вершиной вдоль Y) с расстоянием между гранями af, центр (x, y)."""
+    r = af / math.sqrt(3)
+    return [(x + r * math.cos(math.radians(90 + 60 * k)), y + r * math.sin(math.radians(90 + 60 * k)))
+            for k in range(6)]
+
+
 def _zone(d, cols, rows, wall):
-    """Гексагональная зона гнёзд диаметром d; шаг = d + wall (кольца делят стенку)."""
+    """Соты: гнездо с расстоянием между гранями d; шаг = d + wall (грани общие)."""
     pitch = d + wall
+    r = pitch / math.sqrt(3)               # радиус описанной окружности ячейки соты
     w = (cols + 0.5) * pitch + wall
-    h = (rows - 1) * pitch * _HEX + pitch + wall
-    centers = [(wall / 2 + pitch / 2 + c * pitch + (pitch / 2 if r % 2 else 0),
-                wall / 2 + pitch / 2 + r * pitch * _HEX)
-               for r in range(rows) for c in range(cols)]
+    h = (rows - 1) * pitch * _HEX + 2 * r + wall
+    centers = [(wall / 2 + pitch / 2 + c * pitch + (pitch / 2 if rw % 2 else 0),
+                wall / 2 + r + rw * pitch * _HEX)
+               for rw in range(rows) for c in range(cols)]
     return w, h, centers
 
 
@@ -78,14 +86,14 @@ def build_organizer(**kw):
     solid = outer.cut(inner)
     # кольца гнёзд; щели между кольцами остаются сквозными -> меньше пластика/времени
     for x, y, d, h in pts:
-        ring = cq.Workplane("XY").center(x, y).circle(d / 2 + wall).extrude(h)
-        solid = solid.union(ring)
+        cell = cq.Workplane("XY").polyline(_hex(x, y, d + wall)).close().extrude(h)
+        solid = solid.union(cell)
     ch = p["coin_height"]
     for x, y, w_i, dy in squares:
         solid = solid.union(cq.Workplane("XY").center(x, y).rect(w_i + 2 * wall, dy + 2 * wall).extrude(ch))
     for x, y, d, h in pts:
-        solid = solid.cut(cq.Workplane("XY").workplane(offset=fl).center(x, y)
-                          .circle(d / 2).extrude(h))
+        solid = solid.cut(cq.Workplane("XY").workplane(offset=fl)
+                          .polyline(_hex(x, y, d)).close().extrude(h))
     for x, y, w_i, dy in squares:
         solid = solid.cut(cq.Workplane("XY").workplane(offset=fl).center(x, y)
                           .rect(w_i, dy).extrude(ch).edges("|Z").fillet(1.0))
