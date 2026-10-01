@@ -225,3 +225,10 @@ base, lid, pin = build_box_and_lid(box_width=190, box_length=130, box_height=30,
 гнёзд, щели у стенок сквозные; соты AAA и «таблеток» ниже внешней стенки.
 Без поддержек. Параметры: `--aa-cols --aa-rows --aaa-cols --aaa-rows --height --wall`;
 диаметры плоских батареек — `coin_diameters` в `DEFAULTS`.
+
+### Вариант с квадратными ячейками
+
+`models/battery_organizer_square.py` → `stl/battery_organizer_square.stl`. Сплошная прямоугольная сетка:
+общие стенки, без пустот между ячейками, сплошное дно. Размеры ячеек подгоняются, чтобы зоны AA / AAA /
+«таблетки» ровно заполнили коробку. Те же 76 ячеек (40 AA, 28 AAA, 8 плоских), 184×113×26 мм, ~104 см³.
+Параметры те же: `--aa-cols --aa-rows --aaa-cols --aaa-rows --height --wall`.
