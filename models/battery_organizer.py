@@ -61,10 +61,14 @@ def build_organizer(**kw):
     D = y0 + max(ha, hd)
 
     pts = []   # (x, y, диаметр гнезда, высота кольца)
+    squares = []   # ёмкости для плоских батареек: (x, y, ширина, глубина)
+    extra = (W - coin_w) / len(coins)     # остаток ширины делим поровну
+    side_y = strip_h - 2 * wall           # глубина ёмкости = по самой большой
     x = wall
     for d in coins:
-        pts.append((x + (d + wall) / 2 - wall / 2 + wall / 2, strip_h / 2, d, p["coin_height"]))
-        x += d + wall
+        w_i = d + extra
+        squares.append((x + (w_i + wall) / 2, strip_h / 2, w_i, side_y))
+        x += w_i + wall
     pts += [(cx, cy + y0, da, H) for cx, cy in ca]
     pts += [(cx + wa - wall, cy + y0, dd, p["aaa_height"]) for cx, cy in cd]
 
@@ -76,10 +80,16 @@ def build_organizer(**kw):
     for x, y, d, h in pts:
         ring = cq.Workplane("XY").center(x, y).circle(d / 2 + wall).extrude(h)
         solid = solid.union(ring)
+    ch = p["coin_height"]
+    for x, y, w_i, dy in squares:
+        solid = solid.union(cq.Workplane("XY").center(x, y).rect(w_i + 2 * wall, dy + 2 * wall).extrude(ch))
     for x, y, d, h in pts:
         solid = solid.cut(cq.Workplane("XY").workplane(offset=fl).center(x, y)
                           .circle(d / 2).extrude(h))
-    return solid, pts, (W, D, H)
+    for x, y, w_i, dy in squares:
+        solid = solid.cut(cq.Workplane("XY").workplane(offset=fl).center(x, y)
+                          .rect(w_i, dy).extrude(ch).edges("|Z").fillet(1.0))
+    return solid, pts + [(x, y, w, ch) for x, y, w, _ in squares], (W, D, H)
 
 
 def main():
