@@ -7,7 +7,7 @@
 1 мм, соседние гнёзда делят общую стенку), печатается без поддержек.
 
 Использование:
-    python3 battery_organizer.py [--aa-cols 6 --aa-rows 5 --aaa-cols 5 --aaa-rows 7]
+    python3 battery_organizer.py [--aa-cols 8 --aa-rows 5 --aaa-cols 3 --aaa-rows 7]
 """
 
 import argparse
@@ -22,8 +22,8 @@ DEFAULTS = dict(
     wall=1.0,                               # стенка между гнёздами и внешняя стенка, мм
     floor=1.2,                              # толщина дна, мм
     height=26.0,                            # полная высота короба, мм
-    aa_cols=6, aa_rows=5,
-    aaa_cols=5, aaa_rows=7,
+    aa_cols=8, aa_rows=5,
+    aaa_cols=3, aaa_rows=7,
 )
 
 _HEX = math.sqrt(3) / 2
